@@ -1,0 +1,9 @@
+{
+  "court_history": [{"id":"collision","op":"inspect","court":"east","minute":98,"wet":0}],
+  "foreign_team": [{"id":"r-other","op":"round","division":"north","earliest":95,"deadline":240,"expected":1},
+                   {"id":"bad-team","op":"fixture","round":"r-other","home":"owls","away":"pines"}],
+  "foreign_ref": [{"id":"bad-ref","op":"assign","fixture":"f1","court":"east","start":100,"official":"ref-s"}],
+  "unsigned_move": [{"id":"too-soon","op":"move","promise":"offer-f1","minute":105}],
+  "stale_score": [{"id":"wrong-score","op":"result","fixture":"f1","assignment":"old-f1","revision":1,"minute":190,"home":2,"away":1}],
+  "stale_recall": [{"id":"wrong-recall","op":"recall","round":"r1","expected":"publication-0","reason":"incorrect ledger generation"}]
+}

@@ -1,0 +1,4 @@
+[
+  {"id":"late-ref-a","op":"window","kind":"official","person":"ref-a","start":170,"stop":180,"available":false},
+  {"id":"recall-1","op":"recall","round":"r1","expected":"publication-1","reason":"late referee blackout during replayed fixture"}
+]
