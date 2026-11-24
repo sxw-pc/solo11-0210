@@ -39,3 +39,7 @@ python -m courts_rain audit --db league.sqlite
 `round-report` 输出材料巡查号、窗口号、迁场来源、结果修订、跨度与阻断原因。迟到证据令已结算快照出现差异时，当前轮显示 `review-required`，由值班人员提交显式冲回。`audit` 按入账顺序从事件重建临时 SQLite，比较所有投影表并返回重算轮次与联赛榜。发现投影不一致时退出码为 1，业务拒绝或无法读取返回 2。
 
 实现集中于 `grounds.py` 的场地证据、`eligibility.py` 的分组和窗口、`schedule.py` 的轮次与占场、`ledger.py` 的比赛结果和积分。`fixtures/league.json` 演示双场同轮及一次补赛。`fixtures/late-recall.json` 加入覆盖补赛时段的裁判停用并冲回。`fixtures/rejections.json` 保存对账和拒绝案例，由测试在指定前置状态下执行。
+
+## 交班备份的批量审计
+
+`python -B -m courts_rain.archive_audit east=east.sqlite west=west.sqlite` 逐份只读打开已复制的备份，使用原账审计进行重放及逐表对照。各备份报告独立，包含本库重新推导的当前视图。无效或找不到的单份档案会单列拒绝，任何一份未核实则命令返回非零。
