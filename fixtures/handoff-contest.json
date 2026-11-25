@@ -1,0 +1,4 @@
+[
+  {"machine":"pavilion-a","seq":1,"id":"pad-f1","op":"assign","fixture":"f1","court":"west","start":115,"official":"ref-a"},
+  {"machine":"pavilion-b","seq":1,"id":"pbd-f2","op":"assign","fixture":"f2","court":"west","start":115,"official":"ref-b"}
+]

@@ -5,7 +5,6 @@ from pathlib import Path
 from . import eligibility, grounds, ledger, schedule
 from .db import connect, ingest, require
 
-
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 ACTIONS = {
     "court": grounds.add_court, "inspect": grounds.inspect,
@@ -24,6 +23,21 @@ def load(path):
 
 def apply(db, records):
     return ingest(db, records, ACTIONS)
+
+
+def load_batch(path):
+    from .handoff import parse_exports
+    return parse_exports(load(path))
+
+
+def plan_batch(db, exports_or_items):
+    from .handoff import plan_batch as run
+    return run(db, exports_or_items, ACTIONS)
+
+
+def commit_batch(db, exports_or_items, vector):
+    from .handoff import commit_batch as run
+    return run(db, exports_or_items, vector, ACTIONS)
 
 
 def demo(db):
@@ -55,6 +69,11 @@ def audit(db):
         require(all(row["id"] == payload.get("id") for row, payload in zip(rows, records)), "journal identity mismatch")
         with connect(":memory:") as replayed:
             apply(replayed, records)
+            journal = db.execute("SELECT machine,seq,id FROM device_journal ORDER BY machine,seq").fetchall()
+            require(all(replayed.execute("SELECT 1 FROM events WHERE id=?", (row["id"],)).fetchone()
+                        for row in journal), "device journal references an unknown event")
+            replayed.executemany("INSERT INTO device_journal(machine,seq,id) VALUES (?,?,?)",
+                                 [(row["machine"], row["seq"], row["id"]) for row in journal])
             tables = [row[0] for row in replayed.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
             drift = []
             for table in tables:

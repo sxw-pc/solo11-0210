@@ -1,0 +1,7 @@
+[
+  {"machine":"pavilion-a","seq":1,"id":"pad-f1","op":"assign","fixture":"f1","court":"west","start":115,"official":"ref-a"},
+  {"machine":"pavilion-b","seq":1,"id":"pbd-f2","op":"assign","fixture":"f2","court":"west","start":115,"official":"ref-b"},
+  {"machine":"pavilion-b","seq":2,"id":"pbd-score-1","op":"result","fixture":"f2","assignment":"pbd-f2","revision":1,"minute":150,"home":2,"away":0},
+  {"machine":"pavilion-b","seq":3,"id":"pbd-score-2","op":"result","fixture":"f2","assignment":"pbd-f2","revision":2,"minute":155,"home":3,"away":1},
+  {"machine":"pavilion-b","seq":4,"id":"pbd-score-3","op":"result","fixture":"f2","assignment":"pbd-f2","revision":3,"minute":160,"home":3,"away":2}
+]

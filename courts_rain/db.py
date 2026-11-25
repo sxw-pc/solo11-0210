@@ -6,6 +6,10 @@ from contextlib import contextmanager
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY, id TEXT UNIQUE, body TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS device_journal(
+ machine TEXT NOT NULL, seq INTEGER NOT NULL, id TEXT NOT NULL UNIQUE,
+ PRIMARY KEY(machine, seq),
+ FOREIGN KEY(id) REFERENCES events(id));
 CREATE TABLE IF NOT EXISTS courts(id TEXT PRIMARY KEY, surface TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS inspections(
  id TEXT PRIMARY KEY, court TEXT NOT NULL REFERENCES courts, minute INTEGER NOT NULL,
@@ -88,6 +92,12 @@ def one(db, sql, *args):
     return db.execute(sql, args).fetchone()
 
 
+def backup(source, target):
+    """Copy every committed row of ``source`` into another open connection."""
+    source.backup(target)
+    return target
+
+
 def entity(db, table, key):
     identity(key)
     row = one(db, f"SELECT * FROM {table} WHERE id=?", key)
@@ -95,29 +105,46 @@ def entity(db, table, key):
     return row
 
 
-def ingest(db, records, actions):
+def judge(db, record, actions, provenance=None):
+    """Apply one event's existing business adjudication.
+
+    Identical retransmissions are safe. When ``provenance`` (machine, raw
+    sequence) is supplied, a known sequence must always reference the same
+    event: same number, different content is an explicit conflict.
+    """
+    require(isinstance(record, dict), "event must be an object")
+    event = identity(record.get("id"))
+    action = record.get("op")
+    require(isinstance(action, str) and action in actions, "unknown operation")
+    body = encode(record)
+    if provenance is not None:
+        machine, raw_seq = provenance
+        logged = one(db, "SELECT id FROM device_journal WHERE machine=? AND seq=?", machine, raw_seq)
+        require(logged is None or logged["id"] == event,
+                f"device sequence conflict: {machine}#{raw_seq}")
+    old = one(db, "SELECT body FROM events WHERE id=?", event)
+    if old:
+        require(old["body"] == body, f"event ID conflict: {event}")
+        return {"id": event, "decision": "duplicate"}
+    args = {k: v for k, v in record.items() if k not in ("id", "op")}
+    try:
+        decision = actions[action](db, event, **args)
+    except TypeError as exc:
+        raise Rejected(f"invalid arguments for {action}: {exc}") from exc
+    db.execute("INSERT INTO events(id,body) VALUES (?,?)", (event, body))
+    if provenance is not None:
+        db.execute("INSERT INTO device_journal(machine,seq,id) VALUES (?,?,?)", (machine, raw_seq, event))
+    return {"id": event, "decision": decision}
+
+
+def ingest(db, records, actions, provenance=None):
     """A file is all-or-nothing. Retried event IDs must have identical content."""
     decisions = []
     db.execute("BEGIN IMMEDIATE")
     try:
-        for record in records:
-            require(isinstance(record, dict), "event must be an object")
-            event = identity(record.get("id"))
-            action = record.get("op")
-            require(isinstance(action, str) and action in actions, "unknown operation")
-            body = encode(record)
-            old = one(db, "SELECT body FROM events WHERE id=?", event)
-            if old:
-                require(old["body"] == body, f"event ID conflict: {event}")
-                decisions.append({"id": event, "decision": "duplicate"})
-                continue
-            args = {k: v for k, v in record.items() if k not in ("id", "op")}
-            try:
-                decision = actions[action](db, event, **args)
-            except TypeError as exc:
-                raise Rejected(f"invalid arguments for {action}: {exc}") from exc
-            db.execute("INSERT INTO events(id,body) VALUES (?,?)", (event, body))
-            decisions.append({"id": event, "decision": decision})
+        for index, record in enumerate(records):
+            origin = (provenance[0], provenance[1] + index) if provenance is not None else None
+            decisions.append(judge(db, record, actions, origin))
         db.commit()
     except BaseException:
         db.rollback()

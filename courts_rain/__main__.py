@@ -11,10 +11,11 @@ from .db import connect, encode, require
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("init", "apply", "demo", "court-status", "availability", "round-report", "standings", "audit"):
+    for name in ("init", "apply", "demo", "court-status", "availability", "round-report",
+                 "standings", "audit", "plan", "commit"):
         cmd = commands.add_parser(name)
         cmd.add_argument("--db", required=True)
-        if name == "apply":
+        if name in ("apply", "plan", "commit"):
             cmd.add_argument("file")
         elif name == "court-status":
             cmd.add_argument("court")
@@ -25,9 +26,12 @@ def main(argv=None):
             cmd.add_argument("stop", type=int)
         elif name == "round-report":
             cmd.add_argument("round")
+        if name == "commit":
+            cmd.add_argument("--choice", type=int, default=0,
+                            help="index of the max-size plan to commit (default 0)")
     opts = parser.parse_args(argv)
     try:
-        query = opts.command not in {"init", "apply", "demo"}
+        query = opts.command not in {"init", "apply", "demo", "commit"}
         if query:
             require(Path(opts.db).is_file(), "database does not exist")
         with connect(opts.db) as db:
@@ -39,6 +43,15 @@ def main(argv=None):
                 output = workbench.apply(db, workbench.load(opts.file))
             elif opts.command == "demo":
                 output = {"decisions": workbench.demo(db), **workbench.read_state(db)}
+            elif opts.command == "plan":
+                output = workbench.plan_batch(db, workbench.load(opts.file))
+            elif opts.command == "commit":
+                exports = workbench.load_batch(opts.file)
+                trial = workbench.plan_batch(db, exports)
+                require(0 <= opts.choice < trial["plan_count"], "plan choice out of range")
+                vector = trial["plans"][opts.choice]["machine_prefixes"]
+                output = {"selected": opts.choice, "trial": trial,
+                          "commit": workbench.commit_batch(db, exports, vector)}
             elif opts.command == "court-status":
                 output = grounds.condition(db, opts.court, opts.minute)
             elif opts.command == "availability":

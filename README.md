@@ -12,6 +12,24 @@ python -m courts_rain audit --db demo.sqlite
 python -m unittest discover -s tests -v
 ```
 
+## 双亭交班（离线采录机批次）
+
+两台采录机各自只导出本机的原始序号（片段里的 `machine` 与 `seq`），导出文件的时间戳不参与任何排序。每台机只能贡献其导出的**连续前缀**：某条被 `db.py` 的现有裁定拒绝后，本机后续原件一律压到下一班。试算在基础库的内存副本上进行（`db.backup`），不会占用场地、采录位置或序号；`plan` 只回答“本班最多可新增多少原件”和每个同量级计划的实际执行顺序及压下原因。
+
+- 同号同内容重传返回 `duplicate`，已确认序号可安全重传；同机同序号对应不同原件报 `device sequence conflict`，整批拒绝。
+- 占场排他等跨机冲突在同一读取窗口内决定谁先占位：`plan` 列出**全部**达到最大新增量的前缀向量，不同计划的数据不合并，值班员任选其一后用 `commit --choice` 提交。
+- `commit` 先在隔离副本上按所选顺序重验，再在单个 `BEGIN IMMEDIATE` 事务内写入；任一事件拒绝则整事务回滚，不留半截写入。
+- `device_journal` 表记录 `(machine, seq) -> 事件号`，`audit` 重放时一并重建并参与投影比对。
+- 原有的单文件 `apply` 不带采录来源，行为与此前完全一致。
+
+```text
+python -m courts_rain plan --db league.sqlite fixtures/handoff-contest.json
+python -m courts_rain commit --db league.sqlite --choice 1 fixtures/handoff-contest.json
+python -m courts_rain audit --db league.sqlite
+```
+
+`fixtures/handoff-contest.json` 在 `old-f1` 前截断的基础库上让两台机争抢 west 115 分钟，两机都只能入账 1 条；`fixtures/handoff-longer.json` 给第二台补上合法成绩链，正确交班应取第二台的更长前缀。规模场景（至少八台机、跨机无冲突）从已解析输入起在三秒内给出最大摄入量，规划只枚举每台机的前缀长度，从不枚举机间穿插顺序。
+
 分阶段观察积分快照与回退时，可另用空库运行以下命令。`apply` 自动初始化 SQLite，`init --db league.sqlite` 可单独初始化。
 
 ```text
