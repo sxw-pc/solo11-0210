@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 
-from . import eligibility, grounds, ledger, schedule
+from . import eligibility, grounds, ledger, pages, schedule
 from .db import connect, ingest, require
 
 
@@ -13,6 +13,7 @@ ACTIONS = {
     "window": eligibility.window, "round": schedule.add_round, "fixture": schedule.add_fixture,
     "assign": schedule.assign, "promise": schedule.promise, "consent": schedule.consent,
     "move": schedule.move, "result": ledger.result, "settle": ledger.settle, "recall": ledger.recall,
+    "page": pages.add_page, "confirm": pages.confirm, "tally": ledger.tally,
 }
 
 

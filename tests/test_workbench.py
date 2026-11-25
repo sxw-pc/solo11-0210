@@ -2,7 +2,7 @@ import json
 import sqlite3
 import unittest
 
-from courts_rain import eligibility, grounds, ledger, schedule, workbench
+from courts_rain import eligibility, grounds, ledger, pages, schedule, workbench
 from courts_rain.db import Rejected, connect, one
 
 
@@ -159,3 +159,177 @@ class RainLeagueTests(unittest.TestCase):
         replay = workbench.audit(self.db)
         self.assertEqual(replay["drift"], ["entries"])
         self.assertEqual(replay["standings"]["north"][0]["points"], 3)
+
+
+class ScorePageTests(unittest.TestCase):
+    """Raw score-sheet pages for the rained-out f1 replay (annex, minutes 160-190)."""
+
+    def setUp(self):
+        self.db = self.enterContext(connect(":memory:"))
+        self.league = workbench.load(workbench.FIXTURES / "league.json")
+        index = next(i for i, record in enumerate(self.league) if record["id"] == "score-f1")
+        workbench.apply(self.db, self.league[:index])
+
+    def apply(self, *events):
+        return workbench.apply(self.db, events)
+
+    def page(self, event, origin, start, stop, home, away, assignment="new-f1"):
+        return op(event, "page", fixture="f1", assignment=assignment, origin=origin,
+                  start=start, stop=stop, home=home, away=away)
+
+    def copies(self):
+        return [self.page("page-a", "doc-a", 0, 18, 2, 0),
+                self.page("page-b", "doc-b", 12, 30, 1, 2),
+                self.page("copy-zero", "doc-c", 12, 18, 0, 0),
+                self.page("copy-one", "doc-c", 12, 18, 1, 0)]
+
+    def confirm(self, event, home, away, claims):
+        return op(event, "confirm", fixture="f1", assignment="new-f1", origin="doc-c",
+                  start=12, stop=18, home=home, away=away, claims=claims)
+
+    def tally(self, event, revision=1, minute=190, assignment="new-f1"):
+        return op(event, "tally", fixture="f1", assignment=assignment, revision=revision, minute=minute)
+
+    def test_same_page_set_supports_two_valid_confirmations(self):
+        outcomes = {}
+        for home, away in ((0, 0), (1, 0)):
+            with connect(":memory:") as db:
+                index = next(i for i, record in enumerate(self.league) if record["id"] == "score-f1")
+                workbench.apply(db, self.league[:index])
+                workbench.apply(db, self.copies())
+                with self.assertRaisesRegex(Rejected, "score pages contradictory"):
+                    workbench.apply(db, [self.tally("tally-early")])
+                # the duty confirmation, not page arrival order, picks the scoring copy:
+                # copy-zero arrived before copy-one, yet either one can be confirmed
+                workbench.apply(db, [self.confirm("confirm-c", home, away, [[0, 0], [1, 0]])])
+                analysis = pages.analyze(db, "new-f1")
+                self.assertEqual(analysis["status"], "unique")
+                expected = (3, 2) if (home, away) == (0, 0) else (2, 2)
+                self.assertEqual((analysis["score"]["home"], analysis["score"]["away"]), expected)
+                decision = workbench.apply(db, [self.tally("tally-f1")])
+                self.assertEqual(decision[0]["decision"], "result-admitted")
+                score = schedule.latest_result(db, "new-f1")
+                workbench.apply(db, [self.league[-1]])
+                replay = workbench.audit(db)
+                self.assertEqual(replay["audit"], "verified")
+                outcomes[(score["home"], score["away"])] = [row["points"]
+                                                            for row in replay["standings"]["north"]]
+        self.assertEqual(outcomes, {(3, 2): [3, 1, 1, 0], (2, 2): [1, 1, 1, 1]})
+
+    def test_partial_pages_stay_open_with_witnesses_and_gaps(self):
+        self.apply(self.page("page-a", "doc-a", 0, 18, 2, 0))
+        report = pages.analyze(self.db, "new-f1")
+        self.assertEqual(report["status"], "ambiguous")
+        self.assertTrue(report["open"])
+        self.assertEqual(report["gaps"], [[18, 30]])
+        self.assertEqual(report["bounds"], {"home": [2, None], "away": [0, None]})
+        self.assertEqual(report["witnesses"], [[[0, 0, 0], [18, 2, 0], [30, 2, 0]],
+                                               [[0, 0, 0], [18, 2, 0], [30, 3, 0]]])
+        with self.assertRaisesRegex(Rejected, "score pages ambiguous"):
+            self.apply(self.tally("tally-half"))
+        self.apply(self.page("page-b", "doc-b", 12, 30, 1, 2))
+        report = pages.analyze(self.db, "new-f1")
+        self.assertEqual(report["status"], "ambiguous")
+        self.assertFalse(report["open"])
+        self.assertEqual(report["gaps"], [])
+        self.assertEqual(report["bounds"], {"home": [2, 3], "away": [2, 2]})
+        self.assertEqual(report["witnesses"], [[[0, 0, 0], [12, 1, 0], [18, 2, 0], [30, 2, 2]],
+                                               [[0, 0, 0], [12, 2, 0], [18, 2, 0], [30, 3, 2]]])
+
+    def test_contradictory_pages_name_a_non_coexisting_set(self):
+        self.apply(self.page("page-p1", "doc-p1", 0, 10, 3, 0),
+                   self.page("page-p2", "doc-p2", 10, 20, 0, 0),
+                   self.page("page-p3", "doc-p3", 0, 20, 1, 0))
+        report = pages.analyze(self.db, "new-f1")
+        self.assertEqual(report["status"], "contradictory")
+        self.assertEqual(report["reason"], "inconsistent")
+        self.assertEqual(report["conflict"], ["page-p1", "page-p3"])
+        with self.assertRaisesRegex(Rejected, "score pages contradictory"):
+            self.apply(self.tally("tally-bad"))
+
+    def test_page_interval_must_fit_the_match(self):
+        with self.assertRaisesRegex(Rejected, "outside match"):
+            self.apply(self.page("page-wide", "doc-w", 0, 31, 0, 0))
+        with self.assertRaisesRegex(Rejected, "invalid page home delta"):
+            self.apply(self.page("page-negative", "doc-n", 0, 10, -1, 0))
+
+    def test_single_page_billion_score_stays_constant_work(self):
+        billion = 10 ** 9
+        self.apply(self.page("page-big", "doc-big", 0, 30, billion, billion))
+        report = pages.analyze(self.db, "new-f1")
+        self.assertEqual(report["status"], "unique")
+        self.assertEqual(report["score"], {"home": billion, "away": billion})
+        self.assertEqual(self.apply(self.tally("tally-big"))[0]["decision"], "result-admitted")
+        self.assertEqual(schedule.latest_result(self.db, "new-f1")["home"], billion)
+
+    def test_late_copy_after_confirmation_needs_fresh_confirmation(self):
+        self.apply(*self.copies())
+        self.apply(self.confirm("confirm-c", 0, 0, [[0, 0], [1, 0]]))
+        # retransmitting a confirmed claim does not disturb the group
+        self.apply(self.page("copy-zero-again", "doc-c", 12, 18, 0, 0))
+        self.assertEqual(pages.analyze(self.db, "new-f1")["status"], "unique")
+        # a new claim in the same group suspends the confirmation for scoring
+        self.apply(self.page("copy-two", "doc-c", 12, 18, 2, 0))
+        report = pages.analyze(self.db, "new-f1")
+        self.assertEqual(report["status"], "contradictory")
+        self.assertEqual(report["reason"], "unconfirmed-copies")
+        self.assertEqual(report["conflict"], ["copy-one", "copy-two", "copy-zero", "copy-zero-again"])
+        with self.assertRaisesRegex(Rejected, "score pages contradictory"):
+            self.apply(self.tally("tally-stale"))
+        # the old binding no longer matches the group; a fresh complete binding is required
+        with self.assertRaisesRegex(Rejected, "complete conflict group"):
+            self.apply(self.confirm("confirm-stale", 0, 0, [[0, 0], [1, 0]]))
+        self.apply(self.confirm("confirm-c2", 0, 0, [[0, 0], [1, 0], [2, 0]]))
+        self.assertEqual(self.apply(self.tally("tally-f1"))[0]["decision"], "result-admitted")
+        self.assertEqual(schedule.latest_result(self.db, "new-f1")["home"], 3)
+
+    def test_late_patrol_closing_court_blocks_tally_but_not_review(self):
+        self.apply(*self.copies())
+        self.apply(self.confirm("confirm-c", 0, 0, [[0, 0], [1, 0]]))
+        self.assertEqual(pages.analyze(self.db, "new-f1")["status"], "unique")
+        self.apply(op("late-soak", "inspect", court="annex", minute=155, wet=3))
+        self.assertEqual(pages.analyze(self.db, "new-f1")["status"], "unique")
+        with self.assertRaisesRegex(Rejected, "court-closed"):
+            self.apply(self.tally("tally-soaked"))
+
+    def test_pages_stay_with_their_occupancy_revision(self):
+        self.apply(*self.copies())
+        self.apply(self.confirm("confirm-c", 0, 0, [[0, 0], [1, 0]]))
+        self.apply(op("soak", "inspect", court="annex", minute=158, wet=3),
+                   op("dry-east", "inspect", court="east", minute=150, wet=0),
+                   op("offer-again", "promise", fixture="f1", prior="new-f1", court="east",
+                      start=195, official="ref-a", expires=190),
+                   op("sign-o2", "consent", promise="offer-again", person="owls", minute=170),
+                   op("sign-f2", "consent", promise="offer-again", person="foxes", minute=171),
+                   op("sign-r2", "consent", promise="offer-again", person="ref-a", minute=172),
+                   op("move-again", "move", promise="offer-again", minute=185))
+        self.assertEqual(schedule.current(self.db, "f1")["rev"], 3)
+        with self.assertRaisesRegex(Rejected, "stale assignment"):
+            self.apply(self.tally("tally-old"))
+        self.assertEqual(pages.analyze(self.db, "new-f1")["status"], "unique")
+        self.assertEqual(pages.analyze(self.db, "move-again")["status"], "ambiguous")
+        with self.assertRaisesRegex(Rejected, "score pages ambiguous"):
+            self.apply(self.tally("tally-new", assignment="move-again", minute=225))
+        self.apply(self.page("page-n", "doc-n", 0, 30, 4, 1, assignment="move-again"))
+        decision = self.apply(self.tally("tally-new", assignment="move-again", minute=225))
+        self.assertEqual(decision[0]["decision"], "result-admitted")
+        self.assertEqual(schedule.latest_result(self.db, "move-again")["home"], 4)
+
+    def test_ledgered_score_survives_late_pages_and_needs_recall_to_change(self):
+        self.apply(*self.copies())
+        self.apply(self.confirm("confirm-c", 0, 0, [[0, 0], [1, 0]]))
+        self.apply(self.tally("tally-f1"))
+        self.apply(self.league[-1])
+        with self.assertRaisesRegex(Rejected, "recall the active settlement"):
+            self.apply(self.tally("tally-rev2", revision=2, minute=195))
+        # a late independent page is retained but never rewrites the ledgered score
+        self.apply(self.page("page-late", "doc-late", 0, 30, 9, 9))
+        self.assertEqual(pages.analyze(self.db, "new-f1")["status"], "contradictory")
+        self.assertEqual(schedule.latest_result(self.db, "new-f1")["home"], 3)
+        replay = workbench.audit(self.db)
+        self.assertEqual(replay["audit"], "verified")
+        self.assertEqual(replay["standings"]["north"][0],
+                         {"team": "owls", "points": 3, "difference": 1, "played": 1, "rank": 1})
+
+
+

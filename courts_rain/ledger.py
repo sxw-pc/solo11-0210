@@ -1,7 +1,7 @@
 """Result validity, simultaneous round release and compensating league entries."""
 from collections import defaultdict
 
-from . import grounds, schedule
+from . import grounds, pages, schedule
 from .db import encode, entity, identity, integer, one, require
 
 
@@ -29,6 +29,20 @@ def result(db, event, fixture, assignment, revision, minute, home, away):
         require(not blockers, "result ineligible: " + ",".join(blockers))
     db.execute("INSERT INTO results VALUES (?,?,?,?,?,?)", (event, assignment, revision, minute, home, away))
     return "result-voided" if home is None else "result-admitted"
+
+
+def tally(db, event, fixture, assignment, revision, minute):
+    """Turn a uniquely determined page set into an official result under the ledger rules."""
+    entity(db, "fixtures", fixture)
+    slot = schedule.current(db, fixture)
+    require(slot is not None and slot["id"] == assignment, "tally targets stale assignment")
+    report = pages.analyze(db, assignment)
+    detail = report["status"]
+    if report["status"] == "contradictory":
+        detail += ": " + ",".join(report["conflict"])
+    require(report["status"] == "unique", "score pages " + detail)
+    score = report["score"]
+    return result(db, event, fixture, assignment, revision, minute, score["home"], score["away"])
 
 
 def round_report(db, group_id):
